@@ -1,0 +1,66 @@
+# Global Settings
+# ---------------
+
+config core 'core'
+	option disabled '0'
+
+
+# Client Settings
+# ---------------
+
+# Specifies the maximum link-rate for a single client
+# Note that this applies to each client individually.
+
+# Matches all clients (lowest priority)
+config client 'default_client'
+	option download '40Mbit'
+	option upload '766kbit'
+	option disabled '0'
+
+# Matches all clients on SSID 'Guests'
+config client 'guests'
+	option ssid 'Guests'
+	option download '5Mbit'
+	option upload '5Mbit'
+	option disabled '0'
+
+# Matches all clients on network with ifname 'network0'
+config client 'interface0'
+	option interface 'network0'
+	option download '10Mbit'
+	option upload '5Mbit'
+	option disabled '0'
+
+# Matches Client with MAC '00:11:22:33:44:55' (highest priority)
+config client 'notebook'
+	option mac '00:11:22:33:44:55'
+	option download '2Mbit'
+	option upload '512kbit'
+	option disabled '1'
+
+
+# Network Settings
+# ----------------
+
+# Specifies the maximum link-rate for an entire VAP
+# Note that this only applies to each VAP individually.
+
+# Matches all networks (lowest priority)
+config interface 'default_network'
+	option download '2Mbit'
+	option upload '512kbit'
+	option disabled '0'
+
+# Matches all networks with SSID 'Guests'
+config interface 'guests'
+	option ssid 'Guests'
+	option download '5Mbit'
+	option upload '5Mbit'
+	option disabled '1'
+
+# Matches max. 1 network with ifname 'network0' (highest priority)
+config interface 'interface0'
+	option interface 'network0'
+	option download '10Mbit'
+	option upload '5Mbit'
+	option disabled '0'
