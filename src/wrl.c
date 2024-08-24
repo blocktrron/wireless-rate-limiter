@@ -246,6 +246,13 @@ wrl_ubus_clear_config(struct ubus_context *ctx, struct ubus_object *obj,
 {
 	struct wrl_data *wrl = container_of(ctx, struct wrl_data, ubus.ctx);
 
+	if (wrl->full_purge == WRL_PURGE_DONE) {
+		/* Already purged */
+		return UBUS_STATUS_OK;
+	}
+
+	wrl->full_purge = WRL_PURGE_PENDING;
+
 	MSG(INFO, "Clearing Interface configuration\n");
 	wrl_config_interface_purge(&wrl->config);
 	MSG(INFO, "Clearing Client configuration\n");
@@ -301,6 +308,8 @@ wrl_ubus_set_client_config(struct ubus_context *ctx, struct ubus_object *obj,
 
 	client->rate.down = blobmsg_get_u32(tb[WRL_UBUS_SET_CLIENT_DOWN]);
 	client->rate.up = blobmsg_get_u32(tb[WRL_UBUS_SET_CLIENT_UP]);
+
+	wrl->full_purge = WRL_PURGE_NONE;
 
 	return UBUS_STATUS_OK;
 }
@@ -378,6 +387,8 @@ wrl_ubus_set_interface_config(struct ubus_context *ctx, struct ubus_object *obj,
 
 	interface->rate.down = blobmsg_get_u32(tb[WRL_UBUS_SET_INTERFACE_DOWN]);
 	interface->rate.up = blobmsg_get_u32(tb[WRL_UBUS_SET_INTERFACE_UP]);
+
+	wrl->full_purge = WRL_PURGE_NONE;
 
 	return UBUS_STATUS_OK;
 }
@@ -512,10 +523,18 @@ wrl_ubus_init(struct wrl_data *wrl)
 }
 
 static void
-wrl_rate_apply_interface(struct wrl_interface *interface)
+wrl_rate_apply_interface(struct wrl_interface *interface, uint8_t purge)
 {
 	char command_buffer[512];
 	int tx_rate, rx_rate;
+
+	if (purge) {
+		snprintf(command_buffer, sizeof(command_buffer),
+			 "sh /lib/wireless-rate-limiter/htb-netdev.sh remove %s",
+			 interface->name);
+		wrl_execute_command(command_buffer);
+		return;
+	}
 
 	tx_rate = interface->rate.up;
 	rx_rate = interface->rate.down;
@@ -526,7 +545,9 @@ wrl_rate_apply_interface(struct wrl_interface *interface)
 	if (rx_rate == 0)
 		rx_rate = 1 * 1024 * 1024 * 1024;
 
-	snprintf(command_buffer, sizeof(command_buffer), "sh /lib/wireless-rate-limiter/htb-netdev.sh add %s %dkbit %dkbit", interface->name, rx_rate, tx_rate);
+	snprintf(command_buffer, sizeof(command_buffer),
+		 "sh /lib/wireless-rate-limiter/htb-netdev.sh add %s %dkbit %dkbit",
+		 interface->name, rx_rate, tx_rate);
 	wrl_execute_command(command_buffer);
 }
 
@@ -569,11 +590,21 @@ wrl_rate_apply(struct wrl_data *wrl)
 	int i;
 
 	list_for_each_entry(interface, &wrl->interfaces, head) {
-		/* Apply interface rates */
-		if (!interface->rate.applied) {
-			MSG(INFO, "Applying rate for interface %s rx=%dkbit/s, tx=%dkbit/s\n",
+		if (wrl->full_purge == WRL_PURGE_PENDING) {
+			MSG(INFO, "Purge limits for interface %s rx=%dkbit/s tx=%dkbit/s\n",
 			    interface->name, interface->rate.down, interface->rate.up);
-			wrl_rate_apply_interface(interface);
+			wrl_rate_apply_interface(interface, 1);
+			interface->rate.applied = 1;
+		} else if (wrl->full_purge == WRL_PURGE_DONE) {
+			/* Do nothing */
+			continue;
+		} else {
+			/* Apply interface rates */
+			if (!interface->rate.applied) {
+				MSG(INFO, "Applying rate for interface %s rx=%dkbit/s tx=%dkbit/s\n",
+				interface->name, interface->rate.down, interface->rate.up);
+				wrl_rate_apply_interface(interface, 0);
+			}
 		}
 
 		/* Apply client rates */
@@ -584,6 +615,12 @@ wrl_rate_apply(struct wrl_data *wrl)
 			
 			if (interface->rate.applied && client->rate.applied)
 				continue;
+
+			if (wrl->full_purge == WRL_PURGE_PENDING) {
+				/* Interface limits purged, do nothing instead of acking 0 limits */
+				client->rate.applied = 1;
+				continue;
+			}
 
 			MSG(INFO, "Applying rate for client %02x:%02x:%02x:%02x:%02x:%02x, rx=%dkbit/s, tx=%dkbit/s\n",
 			    client->address[0], client->address[1], client->address[2],
@@ -596,6 +633,9 @@ wrl_rate_apply(struct wrl_data *wrl)
 
 		interface->rate.applied = 1;
 	}
+
+	if (wrl->full_purge == WRL_PURGE_PENDING)
+		wrl->full_purge = WRL_PURGE_DONE;
 }
 
 static void
@@ -619,6 +659,8 @@ int
 main(int argc, char *argv[])
 {
 	struct wrl_data wrl = {0};
+
+	wrl.full_purge = WRL_PURGE_DONE;
 
 	log_syslog(1);
 	log_level_set(MSG_INFO);

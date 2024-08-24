@@ -59,7 +59,7 @@ config_apply() {
 
 load_config() {
 	ubus -t 10 wait_for wireless-rate-limiter
-
+	sleep 1
 	ubus call wireless-rate-limiter clear_config
 
 	config_apply
