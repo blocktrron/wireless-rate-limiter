@@ -10,9 +10,9 @@ function qdisc_add_child() {
 	id="$2"
 	ceil="$3"
 
-	options=""
+	ceil=""
 	if [ -n "$ceil" ]; then
-		options="ceil $ceil"
+		ceil="ceil $ceil"
 	fi
 
 	htb_burst=64k
@@ -30,7 +30,7 @@ function qdisc_add_child() {
 		fq_packets=1024
 	fi
 
-	tc class replace dev "$interface" parent 1:1 classid "1:$id" htb rate 1mbit $options burst "$htb_burst" prio 1 quantum 4096
+	tc class replace dev "$interface" parent 1:1 classid "1:$id" htb rate 1mbit $ceil burst "$htb_burst" prio 1 quantum 4096
 	tc qdisc replace dev "$interface" parent "1:$id" handle "$id:" fq_codel flows "$fq_flows" limit "$fq_packets" noecn
 }
 
