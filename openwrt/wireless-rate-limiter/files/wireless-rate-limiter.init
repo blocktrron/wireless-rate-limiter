@@ -53,8 +53,8 @@ config_apply_interface() {
 config_apply() {
 	config_load wireless-rate-limiter
 	config_foreach config_apply_core core
-	config_foreach config_apply_client client
-	config_foreach config_apply_interface interface
+	config_foreach config_apply_client limit-client
+	config_foreach config_apply_interface limit-interface
 }
 
 load_config() {
