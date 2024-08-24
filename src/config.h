@@ -52,12 +52,10 @@ struct wrl_config {
 void wrl_config_init(struct wrl_config *config);
 
 /* Interface config */
-void wrl_config_interface_del(struct wrl_config *config, struct wrl_config_interface_selectors *selectors);
 struct wrl_config_interface *wrl_config_interface_get(struct wrl_config *config, struct wrl_config_interface_selectors *selectors, int *create);
 void wrl_config_interface_purge(struct wrl_config *config);
 
 /* Client config */
-void wrl_config_client_del(struct wrl_config *config, struct wrl_config_client_selectors *selectors);
 struct wrl_config_client *wrl_config_client_get(struct wrl_config *config, struct wrl_config_client_selectors *selectors, int *create);
 void wrl_config_client_purge(struct wrl_config *config);
 

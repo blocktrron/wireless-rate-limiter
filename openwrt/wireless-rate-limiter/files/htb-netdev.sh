@@ -52,7 +52,6 @@ if [ "$ACTION" = "add" ]; then
 
 	# Create Intermediate Functional Block
 	ip link add "$IFB_INTERFACE" type ifb
-	sleep 1
 	ip link set "$IFB_INTERFACE" up
 
 	# Redirect traffic to IFB

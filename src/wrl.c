@@ -36,7 +36,7 @@ wrl_client_get(struct wrl_interface *wrl_iface, uint8_t *mac, uint8_t *allocate)
 {
 	struct wrl_client *client, *free_client = NULL;
 
-	for (int i = 0; i < 256; i++) {
+	for (int i = 0; i < WRL_INTERFACE_NUM_CLIENTS; i++) {
 		client = &wrl_iface->clients[i];
 
 		if (memcmp(client->address, mac, 6) == 0) {
@@ -104,7 +104,7 @@ wrl_ubus_get_clients_cb(struct ubus_request *req, int type, struct blob_attr *ms
 	}
 
 	/* Mark all clients as gone */
-	for (i = 0; i < 256; i++) {
+	for (i = 0; i < WRL_INTERFACE_NUM_CLIENTS; i++) {
 		wrl_iface->clients[i].connected = 0;
 	}
 
@@ -129,7 +129,7 @@ wrl_ubus_get_clients_cb(struct ubus_request *req, int type, struct blob_attr *ms
 		}
 
 		if (allocate) {
-			MSG(INFO, "New client, scheudling rate update\n");
+			MSG(DEBUG, "New client, scheudling rate update\n");
 			client->rate.applied = 0;
 		}
 
@@ -138,7 +138,7 @@ wrl_ubus_get_clients_cb(struct ubus_request *req, int type, struct blob_attr *ms
 	}
 
 	/* Zero all clients that are not connected */
-	for (i = 0; i < 256; i++) {
+	for (i = 0; i < WRL_INTERFACE_NUM_CLIENTS; i++) {
 		client = &wrl_iface->clients[i];
 		if (client->connected)
 			continue;
@@ -208,7 +208,7 @@ wrl_ubus_interfaces_update(struct wrl_data *wrl)
 		interface->missing++;
 
 		if (interface->missing >= 3) {
-			MSG(INFO, "Interface %s missing, removing\n", interface->name);
+			MSG(WARN, "Interface %s missing, removing\n", interface->name);
 			list_del_init(&interface->head);
 			free(interface);
 		}
@@ -222,7 +222,7 @@ wrl_ubus_interfaces_update(struct wrl_data *wrl)
 	list_for_each_entry(interface, &wrl->interfaces, head) {
 		/* Update interface rate-limits */
 		if (wrl_config_interface_update(&wrl->config, interface)) {
-			MSG(INFO, "Update rate-limits for interface %s rx=%d tx=%d\n", interface->name, interface->rate.down, interface->rate.up);
+			MSG(DEBUG, "Update rate-limits for interface %s rx=%d tx=%d\n", interface->name, interface->rate.down, interface->rate.up);
 			interface->rate.applied = 0;
 		}
 
@@ -240,6 +240,261 @@ wrl_ubus_interfaces_update(struct wrl_data *wrl)
 }
 
 static int
+wrl_ubus_clear_config(struct ubus_context *ctx, struct ubus_object *obj,
+		      struct ubus_request_data *req, const char *method,
+		      struct blob_attr *msg)
+{
+	struct wrl_data *wrl = container_of(ctx, struct wrl_data, ubus.ctx);
+
+	MSG(INFO, "Clearing Interface configuration\n");
+	wrl_config_interface_purge(&wrl->config);
+	MSG(INFO, "Clearing Client configuration\n");
+	wrl_config_client_purge(&wrl->config);
+
+	return UBUS_STATUS_OK;
+}
+
+enum {
+	WRL_UBUS_SET_CLIENT_INTERFACE,
+	WRL_UBUS_SET_CLIENT_DOWN,
+	WRL_UBUS_SET_CLIENT_UP,
+	__WRL_UBUS_SET_CLIENT_MAX,
+};
+
+static const struct blobmsg_policy wrl_ubus_set_client_policy[] = {
+	[WRL_UBUS_SET_CLIENT_INTERFACE] = { .name = "interface", .type = BLOBMSG_TYPE_STRING },
+	[WRL_UBUS_SET_CLIENT_DOWN] = { .name = "down", .type = BLOBMSG_TYPE_INT32 },
+	[WRL_UBUS_SET_CLIENT_UP] = { .name = "up", .type = BLOBMSG_TYPE_INT32 },
+};
+
+static int
+wrl_ubus_set_client_config(struct ubus_context *ctx, struct ubus_object *obj,
+			   struct ubus_request_data *req, const char *method,
+			   struct blob_attr *msg)
+{
+	struct wrl_data *wrl = container_of(ctx, struct wrl_data, ubus.ctx);
+	struct wrl_config_client_selectors client_selectors = {};
+	struct blob_attr *tb[__WRL_UBUS_SET_CLIENT_MAX];
+	struct wrl_config_client *client;
+	int create;
+	int ret;
+
+	ret = blobmsg_parse(wrl_ubus_set_client_policy, __WRL_UBUS_SET_CLIENT_MAX, tb, blob_data(msg), blob_len(msg));
+	if (ret) {
+		MSG(ERROR, "Failed to parse message\n");
+		return UBUS_STATUS_INVALID_ARGUMENT;
+	}
+
+	if (!tb[WRL_UBUS_SET_CLIENT_DOWN] || !tb[WRL_UBUS_SET_CLIENT_UP]) {
+		MSG(ERROR, "Missing arguments\n");
+		return UBUS_STATUS_INVALID_ARGUMENT;
+	}
+
+	if (tb[WRL_UBUS_SET_CLIENT_INTERFACE])
+		strncpy(client_selectors.interface, blobmsg_data(tb[WRL_UBUS_SET_CLIENT_INTERFACE]), sizeof(client_selectors.interface));
+
+	client = wrl_config_client_get(&wrl->config, &client_selectors, &create);
+	if (!client) {
+		MSG(ERROR, "Failed to get client\n");
+		return UBUS_STATUS_UNKNOWN_ERROR;
+	}
+
+	client->rate.down = blobmsg_get_u32(tb[WRL_UBUS_SET_CLIENT_DOWN]);
+	client->rate.up = blobmsg_get_u32(tb[WRL_UBUS_SET_CLIENT_UP]);
+
+	return UBUS_STATUS_OK;
+}
+
+static int
+wrl_ubus_get_client_config(struct ubus_context *ctx, struct ubus_object *obj,
+			   struct ubus_request_data *req, const char *method,
+			   struct blob_attr *msg)
+{
+	struct wrl_data *wrl = container_of(ctx, struct wrl_data, ubus.ctx);
+	struct wrl_config_client *client;
+	void *a, *t;
+
+	blob_buf_init(&b, 0);
+
+	a = blobmsg_open_array(&b, "client_config");
+	list_for_each_entry(client, &wrl->config.clients, head) {
+		t = blobmsg_open_table(&b, "client");
+		blobmsg_add_string(&b, "interface", client->selectors.interface);
+		blobmsg_add_u32(&b, "down", client->rate.down);
+		blobmsg_add_u32(&b, "up", client->rate.up);
+		blobmsg_close_table(&b, t);
+	}
+	blobmsg_close_array(&b, a);
+
+	ubus_send_reply(ctx, req, b.head);
+
+	return UBUS_STATUS_OK;
+}
+
+enum {
+	WRL_UBUS_SET_INTERFACE_INTERFACE,
+	WRL_UBUS_SET_INTERFACE_DOWN,
+	WRL_UBUS_SET_INTERFACE_UP,
+	__WRL_UBUS_SET_INTERFACE_MAX,
+};
+
+static const struct blobmsg_policy wrl_ubus_set_interface_policy[] = {
+	[WRL_UBUS_SET_INTERFACE_INTERFACE] = { .name = "interface", .type = BLOBMSG_TYPE_STRING },
+	[WRL_UBUS_SET_INTERFACE_DOWN] = { .name = "down", .type = BLOBMSG_TYPE_INT32 },
+	[WRL_UBUS_SET_INTERFACE_UP] = { .name = "up", .type = BLOBMSG_TYPE_INT32 },
+};
+
+static int
+wrl_ubus_set_interface_config(struct ubus_context *ctx, struct ubus_object *obj,
+			      struct ubus_request_data *req, const char *method,
+			      struct blob_attr *msg)
+{
+	struct wrl_data *wrl = container_of(ctx, struct wrl_data, ubus.ctx);
+	struct wrl_config_interface_selectors interface_selectors = {};
+	struct blob_attr *tb[__WRL_UBUS_SET_CLIENT_MAX];
+	struct wrl_config_interface *interface;
+	int create;
+	int ret;
+
+	ret = blobmsg_parse(wrl_ubus_set_interface_policy, __WRL_UBUS_SET_INTERFACE_MAX, tb, blob_data(msg), blob_len(msg));
+	if (ret) {
+		MSG(ERROR, "Failed to parse message\n");
+		return UBUS_STATUS_INVALID_ARGUMENT;
+	}
+
+	if (!tb[WRL_UBUS_SET_INTERFACE_DOWN] || !tb[WRL_UBUS_SET_INTERFACE_UP]) {
+		MSG(ERROR, "Missing arguments\n");
+		return UBUS_STATUS_INVALID_ARGUMENT;
+	}
+
+	if (tb[WRL_UBUS_SET_INTERFACE_INTERFACE])
+		strncpy(interface_selectors.interface, blobmsg_data(tb[WRL_UBUS_SET_INTERFACE_INTERFACE]), sizeof(interface_selectors.interface));
+
+	interface = wrl_config_interface_get(&wrl->config, &interface_selectors, &create);
+	if (!interface) {
+		MSG(ERROR, "Failed to get interface\n");
+		return UBUS_STATUS_UNKNOWN_ERROR;
+	}
+
+	interface->rate.down = blobmsg_get_u32(tb[WRL_UBUS_SET_INTERFACE_DOWN]);
+	interface->rate.up = blobmsg_get_u32(tb[WRL_UBUS_SET_INTERFACE_UP]);
+
+	return UBUS_STATUS_OK;
+}
+
+static int
+wrl_ubus_get_interface_config(struct ubus_context *ctx, struct ubus_object *obj,
+			      struct ubus_request_data *req, const char *method,
+			      struct blob_attr *msg)
+{
+	struct wrl_data *wrl = container_of(ctx, struct wrl_data, ubus.ctx);
+	struct wrl_config_interface *interface;
+	void *a, *t;
+
+	blob_buf_init(&b, 0);
+
+	a = blobmsg_open_array(&b, "interface_config");
+	list_for_each_entry(interface, &wrl->config.interfaces, head) {
+		t = blobmsg_open_table(&b, "interface");
+		blobmsg_add_string(&b, "interface", interface->selectors.interface);
+		blobmsg_add_u32(&b, "down", interface->rate.down);
+		blobmsg_add_u32(&b, "up", interface->rate.up);
+		blobmsg_close_table(&b, t);
+	}
+	blobmsg_close_array(&b, a);
+
+	ubus_send_reply(ctx, req, b.head);
+
+	return UBUS_STATUS_OK;
+}
+
+static int
+wrl_ubus_get_interface(struct ubus_context *ctx, struct ubus_object *obj,
+		       struct ubus_request_data *req, const char *method,
+		       struct blob_attr *msg)
+{
+	struct wrl_data *wrl = container_of(ctx, struct wrl_data, ubus.ctx);
+	struct wrl_interface *interface;
+	void *a, *t;
+
+	blob_buf_init(&b, 0);
+
+	a = blobmsg_open_array(&b, "interfaces");
+	list_for_each_entry(interface, &wrl->interfaces, head) {
+		t = blobmsg_open_table(&b, "interface");
+		blobmsg_add_string(&b, "interface", interface->name);
+		blobmsg_add_u32(&b, "down", interface->rate.down);
+		blobmsg_add_u32(&b, "up", interface->rate.up);
+		blobmsg_add_u8(&b, "applied", interface->rate.applied);
+		blobmsg_close_table(&b, t);
+	}
+	blobmsg_close_array(&b, a);
+
+	ubus_send_reply(ctx, req, b.head);
+
+	return UBUS_STATUS_OK;
+}
+
+static int
+wrl_ubus_get_client(struct ubus_context *ctx, struct ubus_object *obj,
+		    struct ubus_request_data *req, const char *method,
+		    struct blob_attr *msg)
+{
+	struct wrl_data *wrl = container_of(ctx, struct wrl_data, ubus.ctx);
+	struct wrl_interface *interface;
+	struct wrl_client *client;
+	void *a, *t;
+
+	blob_buf_init(&b, 0);
+
+	a = blobmsg_open_array(&b, "clients");
+	list_for_each_entry(interface, &wrl->interfaces, head) {
+		for (int i = 0; i < WRL_INTERFACE_NUM_CLIENTS; i++) {
+			client = &interface->clients[i];
+			if (wrl_mac_is_zero(client->address))
+				continue;
+			
+			t = blobmsg_open_table(&b, "client");
+			blobmsg_add_string(&b, "address", wrl_mac_to_string(client->address, NULL));
+			blobmsg_add_string(&b, "interface", interface->name);
+			blobmsg_add_u32(&b, "down", client->rate.down);
+			blobmsg_add_u32(&b, "up", client->rate.up);
+			blobmsg_add_u8(&b, "applied", client->rate.applied);
+			blobmsg_close_table(&b, t);
+		}
+	}
+	blobmsg_close_array(&b, a);
+
+	ubus_send_reply(ctx, req, b.head);
+
+	return UBUS_STATUS_OK;
+}
+
+
+static const struct ubus_method wrl_ubus_methods[] = {
+	UBUS_METHOD_NOARG("clear_config", wrl_ubus_clear_config),
+
+	UBUS_METHOD("set_client_config", wrl_ubus_set_client_config, wrl_ubus_set_client_policy),
+	UBUS_METHOD_NOARG("get_client_config", wrl_ubus_get_client_config),
+
+	UBUS_METHOD("set_interface_config", wrl_ubus_set_interface_config, wrl_ubus_set_interface_policy),
+	UBUS_METHOD_NOARG("get_interface_config", wrl_ubus_get_interface_config),
+
+	UBUS_METHOD_NOARG("get_interface", wrl_ubus_get_interface),
+	UBUS_METHOD_NOARG("get_client", wrl_ubus_get_client),
+};
+
+static struct ubus_object_type wrl_ubus_obj_type =
+	UBUS_OBJECT_TYPE("wireless-rate-limiter", wrl_ubus_methods);
+
+struct ubus_object wrl_ubus_obj = {
+	.name = "wireless-rate-limiter",
+	.type = &wrl_ubus_obj_type,
+	.methods = wrl_ubus_methods,
+	.n_methods = ARRAY_SIZE(wrl_ubus_methods),
+};
+
+static int
 wrl_ubus_init(struct wrl_data *wrl)
 {
 	int ret;
@@ -249,6 +504,9 @@ wrl_ubus_init(struct wrl_data *wrl)
 		fprintf(stderr, "Failed to connect to ubus: %s\n", ubus_strerror(ret));
 		return 1;
 	}
+
+	ubus_add_object(&wrl->ubus.ctx, &wrl_ubus_obj);
+	ubus_add_uloop(&wrl->ubus.ctx);
 
 	return 0;
 }
@@ -313,12 +571,13 @@ wrl_rate_apply(struct wrl_data *wrl)
 	list_for_each_entry(interface, &wrl->interfaces, head) {
 		/* Apply interface rates */
 		if (!interface->rate.applied) {
-			MSG(INFO, "Applying rate for interface %s\n", interface->name);
+			MSG(INFO, "Applying rate for interface %s rx=%dkbit/s, tx=%dkbit/s\n",
+			    interface->name, interface->rate.down, interface->rate.up);
 			wrl_rate_apply_interface(interface);
 		}
 
 		/* Apply client rates */
-		for (i = 0; i < 256; i++) {
+		for (i = 0; i < WRL_INTERFACE_NUM_CLIENTS; i++) {
 			client = &interface->clients[i];
 			if (wrl_mac_is_zero(client->address))
 				continue;
@@ -326,7 +585,10 @@ wrl_rate_apply(struct wrl_data *wrl)
 			if (interface->rate.applied && client->rate.applied)
 				continue;
 
-			MSG(INFO, "Applying rate for client %02x:%02x:%02x:%02x:%02x:%02x\n", client->address[0], client->address[1], client->address[2], client->address[3], client->address[4], client->address[5]);
+			MSG(INFO, "Applying rate for client %02x:%02x:%02x:%02x:%02x:%02x, rx=%dkbit/s, tx=%dkbit/s\n",
+			    client->address[0], client->address[1], client->address[2],
+			    client->address[3], client->address[4], client->address[5],
+			    interface->rate.down, interface->rate.up);
 			
 			wrl_rate_apply_client(interface, client, i);
 			client->rate.applied = 1;
@@ -352,70 +614,17 @@ wrl_recurring_work_timeout(struct uloop_timeout *timeout)
 	uloop_timeout_set(&wrl->recurring, WRL_RECURRING_WORK_INTERVAL);
 }
 
-static void
-wrl_demo_config(struct wrl_data *wrl)
-{
-	struct wrl_config_interface_selectors iface_selectors_list[] = {
-		{ .interface = "owe0" },
-		{ .interface = "owe1" },
-		{ .interface = "client0" },
-		{ .interface = "client1" },
-		{}
-	};
-	struct wrl_config_interface_selectors *iface_selectors;
-
-	struct wrl_config_client_selectors client_selectors_list[] = {
-		{ .interface = "owe0" },
-		{ .interface = "owe1" },
-		{ .interface = "client0" },
-		{ .interface = "client1" },
-		{}
-	};
-	struct wrl_config_client_selectors *client_selectors;
-
-	struct wrl_config_interface *iface;
-	struct wrl_config_client *client;
-	int create;
-	int i;
-	int num_rules = 4;
-
-	/* Interfaces */
-	for (i = 0; i < num_rules; i++) {
-		iface_selectors = &iface_selectors_list[i];
-		iface = wrl_config_interface_get(&wrl->config, iface_selectors, &create);
-		if (!iface) {
-			MSG(ERROR, "Failed to get interface\n");
-			return;
-		}
-
-		iface->rate.down = 1024 * 20;
-		iface->rate.up = 1024 * 10;
-	}
-
-	/* Clients */
-	for (i = 0; i < num_rules; i++) {
-		client_selectors = &client_selectors_list[i];
-		client = wrl_config_client_get(&wrl->config, client_selectors, &create);
-		if (!client) {
-			MSG(ERROR, "Failed to get client\n");
-			return;
-		}
-
-		client->rate.down = 1024 * 8;
-		client->rate.up = 1024 * 3;
-	}
-}
 
 int
 main(int argc, char *argv[])
 {
 	struct wrl_data wrl = {0};
 
+	log_syslog(1);
+	log_level_set(MSG_INFO);
+
 	INIT_LIST_HEAD(&wrl.interfaces);
 	wrl_config_init(&wrl.config);
-
-	/* Load demo config */
-	wrl_demo_config(&wrl);
 
 	uloop_init();
 

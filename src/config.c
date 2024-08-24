@@ -27,30 +27,25 @@ vrl_config_interface_free(struct wrl_config_interface *interface)
 }
 
 
-void
-wrl_config_interface_del(struct wrl_config *config, struct wrl_config_interface_selectors *selectors)
-{
-	struct wrl_config_interface *interface;
-	
-	interface = wrl_config_interface_get(config, selectors, NULL);
-	if (!interface) {
-		return;
-	}
-
-	vrl_config_interface_free(interface);
-}
-
-
 struct wrl_config_interface *
 wrl_config_interface_get(struct wrl_config *config, struct wrl_config_interface_selectors *selectors, int *create)
 {
 	struct wrl_config_interface *interface = NULL;
+	struct wrl_config_interface *wildcard = NULL;
 
 	list_for_each_entry(interface, &config->interfaces, head) {
 		/* ToDo: Only interface supported for now */
 		if (strncmp(interface->selectors.interface, selectors->interface, sizeof(selectors->interface)) == 0) {
 			return interface;
 		}
+
+		if (interface->selectors.interface[0] == 0) {
+			wildcard = interface;
+		}
+	}
+
+	if (wildcard) {
+		return wildcard;
 	}
 
 	if (!create) {
@@ -91,31 +86,25 @@ wrl_config_client_free(struct wrl_config_client *client)
 }
 
 
-void
-wrl_config_client_del(struct wrl_config *config, struct wrl_config_client_selectors *selectors)
-{
-	struct wrl_config_client *client;
-	
-	client = wrl_config_client_get(config, selectors, NULL);
-	if (!client) {
-		return;
-	}
-
-	wrl_config_client_free(client);
-}
-
-
 struct wrl_config_client *
 wrl_config_client_get(struct wrl_config *config, struct wrl_config_client_selectors *selectors, int *create)
 {
 	struct wrl_config_client *client;
+	struct wrl_config_client *wildcard = NULL;
 
 	list_for_each_entry(client, &config->clients, head) {
 		/* ToDo: Only interface supported for now */
 		if (strncmp(client->selectors.interface, selectors->interface, sizeof(selectors->interface)) == 0) {
 			return client;
 		}
+
+		if (client->selectors.interface[0] == 0) {
+			wildcard = client;
+		}
 	}
+
+	if (wildcard)
+		return wildcard;
 
 	if (!create) {
 		return NULL;

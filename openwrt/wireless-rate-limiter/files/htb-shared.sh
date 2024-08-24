@@ -42,4 +42,5 @@ function qdisc_remove_child() {
 	id="$2"
 	
 	tc class del dev "$interface" parent 1:1 classid "1:$id"
+	tc qdisc del dev "$interface" parent "1:$id" handle "$id:"
 }

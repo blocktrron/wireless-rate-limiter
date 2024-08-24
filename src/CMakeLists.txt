@@ -6,6 +6,7 @@ PROJECT(wireless-rate-limiter C)
 
 SET(SOURCES
 	config.c
+	log.c
 	wrl.c
 )
 

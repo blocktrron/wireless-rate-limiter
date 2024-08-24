@@ -14,15 +14,6 @@ enum channeld_debug_level {
 
 #define MSG(_nr, _format, ...) debug_msg(MSG_##_nr, __func__, __LINE__, _format, ##__VA_ARGS__)
 
-static inline void debug_msg(int level, const char *func, int line, const char *format, ...)
-{
-	va_list ap;
-
-	if (level > MSG_DEBUG)
-		return;
-
-	fprintf(stderr, "[%s:%d] ", func, line);
-	va_start(ap, format);
-	vfprintf(stderr, format, ap);
-	va_end(ap);
-}
+void log_syslog(int enable);
+void log_level_set(enum channeld_debug_level level);
+void debug_msg(int level, const char *func, int line, const char *format, ...);
